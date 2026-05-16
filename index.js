@@ -1,19 +1,37 @@
 /**
- * Tool Box - SillyTavern Extension Framework
+ * Tool Box - SillyTavern Modular Extension
  *
- * A modular extension that provides multiple features that can be individually
- * enabled or disabled. Each feature lives in the features/ directory.
+ * Provides multiple features that can be individually enabled or disabled.
+ * Each feature lives in features/<id>/index.js and exports:
+ *
+ *   export async function init()      - Register event listeners, start feature
+ *   export function destroy()         - Remove listeners, clean up state
+ *
+ * To add a new feature:
+ *   1. Create features/<id>/index.js with init()/destroy()
+ *   2. Add entry to FEATURES array below
  */
 
 import { saveSettingsDebounced } from '/script.js';
 import { extension_settings } from '/scripts/extensions.js';
 
-const EXT_KEY = 'toolbox';
-const DRAWER_ID = 'toolbox_drawer';
+// ========== Configuration ==========
 
+const LOG_PREFIX = 'ToolBox';
+const SETTINGS_KEY = 'toolbox';
+const DRAWER_ID = 'toolbox_settings_drawer';
+
+/**
+ * Feature registry. Each entry defines:
+ *   id          - Unique identifier (matches features/<id>/ directory)
+ *   label       - Display name in settings UI
+ *   description - Short description shown next to the toggle
+ *   module      - Relative path to the feature module
+ *   default     - Default enabled state
+ */
 const FEATURES = [
     {
-        id: 'contextPanel',
+        id: 'context-panel',
         label: 'Context Panel',
         description: '解析消息中的上下文面板标签，渲染记忆召回与补充信息',
         module: './features/context-panel/index.js',
@@ -21,66 +39,76 @@ const FEATURES = [
     },
 ];
 
-const DEFAULT_SETTINGS = {};
-for (const f of FEATURES) {
-    DEFAULT_SETTINGS[f.id] = f.default;
+// ========== Settings ==========
+
+function getDefaultSettings() {
+    const defaults = {};
+    for (const f of FEATURES) {
+        defaults[f.id] = f.default;
+    }
+    return defaults;
 }
 
-// ---------- Settings ----------
-
 function loadSettings() {
-    if (!extension_settings[EXT_KEY]) {
-        extension_settings[EXT_KEY] = {};
+    if (!extension_settings[SETTINGS_KEY]) {
+        extension_settings[SETTINGS_KEY] = {};
     }
-    for (const key in DEFAULT_SETTINGS) {
-        if (!(key in extension_settings[EXT_KEY])) {
-            extension_settings[EXT_KEY][key] = DEFAULT_SETTINGS[key];
+    const defaults = getDefaultSettings();
+    for (const key in defaults) {
+        if (!(key in extension_settings[SETTINGS_KEY])) {
+            extension_settings[SETTINGS_KEY][key] = defaults[key];
         }
     }
 }
 
 function saveSetting(key, value) {
-    extension_settings[EXT_KEY][key] = value;
+    extension_settings[SETTINGS_KEY][key] = value;
     saveSettingsDebounced();
 }
 
-// ---------- Feature Registry ----------
+function getSetting(key) {
+    return extension_settings[SETTINGS_KEY]?.[key] ?? false;
+}
+
+// ========== Feature Registry ==========
 
 /** @type {Map<string, { init: Function, destroy?: Function }>} */
-const loadedFeatures = new Map();
+const loadedModules = new Map();
 
 async function loadFeature(feature) {
-    if (loadedFeatures.has(feature.id)) return;
+    if (loadedModules.has(feature.id)) return;
+
     try {
         const mod = await import(feature.module);
-        if (mod.init) {
-            await mod.init();
-            loadedFeatures.set(feature.id, mod);
-            console.log(`[ToolBox] Feature "${feature.id}" enabled`);
+        if (typeof mod.init !== 'function') {
+            console.error(`[${LOG_PREFIX}] Feature "${feature.id}" has no init() export`);
+            return;
+        }
+        await mod.init();
+        loadedModules.set(feature.id, mod);
+        console.log(`[${LOG_PREFIX}] Feature "${feature.id}" loaded`);
+    } catch (err) {
+        console.error(`[${LOG_PREFIX}] Failed to load feature "${feature.id}":`, err);
+    }
+}
+
+function unloadFeature(featureId) {
+    const mod = loadedModules.get(featureId);
+    if (!mod) return;
+
+    try {
+        if (typeof mod.destroy === 'function') {
+            mod.destroy();
         }
     } catch (err) {
-        console.error(`[ToolBox] Failed to load feature "${feature.id}":`, err);
+        console.error(`[${LOG_PREFIX}] Error destroying feature "${featureId}":`, err);
     }
+
+    loadedModules.delete(featureId);
+    console.log(`[${LOG_PREFIX}] Feature "${featureId}" unloaded`);
 }
 
-function unloadFeature(feature) {
-    const mod = loadedFeatures.get(feature.id);
-    if (mod?.destroy) {
-        mod.destroy();
-    }
-    loadedFeatures.delete(feature.id);
-    console.log(`[ToolBox] Feature "${feature.id}" disabled`);
-}
-
-function toggleFeature(feature, enabled) {
-    if (enabled) {
-        loadFeature(feature);
-    } else {
-        unloadFeature(feature);
-    }
-}
-
-// ---------- Settings UI ----------
+// ========== Settings UI ==========
 
 function createSettingsPanel() {
     const host =
@@ -88,7 +116,6 @@ function createSettingsPanel() {
         document.getElementById('extensions_settings');
     if (!host) return;
 
-    // Prevent duplicates
     if (document.getElementById(DRAWER_ID)) return;
 
     const drawer = document.createElement('div');
@@ -105,30 +132,30 @@ function createSettingsPanel() {
     content.className = 'inline-drawer-content';
 
     for (const feature of FEATURES) {
-        const label = document.createElement('label');
-        label.className = 'checkbox_label';
-        label.style.display = 'flex';
-        label.style.alignItems = 'flex-start';
-        label.style.gap = '6px';
-        label.style.marginBottom = '8px';
+        const row = document.createElement('label');
+        row.className = 'checkbox_label';
 
         const input = document.createElement('input');
         input.type = 'checkbox';
-        input.id = `toolbox_${feature.id}`;
-        input.checked = extension_settings[EXT_KEY][feature.id];
+        input.id = `toolbox_toggle_${feature.id}`;
+        input.checked = getSetting(feature.id);
+
+        const label = document.createElement('small');
+        label.textContent = `${feature.label} — ${feature.description}`;
 
         input.addEventListener('change', () => {
-            saveSetting(feature.id, input.checked);
-            toggleFeature(feature, input.checked);
+            const enabled = input.checked;
+            saveSetting(feature.id, enabled);
+            if (enabled) {
+                loadFeature(feature);
+            } else {
+                unloadFeature(feature.id);
+            }
         });
 
-        const small = document.createElement('small');
-        small.textContent = `${feature.label} - ${feature.description}`;
-        small.style.flex = '1';
-
-        label.appendChild(input);
-        label.appendChild(small);
-        content.appendChild(label);
+        row.appendChild(input);
+        row.appendChild(label);
+        content.appendChild(row);
     }
 
     drawer.appendChild(header);
@@ -136,17 +163,17 @@ function createSettingsPanel() {
     host.appendChild(drawer);
 }
 
-// ---------- Init ----------
+// ========== Init ==========
 
 export async function init() {
     loadSettings();
     createSettingsPanel();
 
     for (const feature of FEATURES) {
-        if (extension_settings[EXT_KEY][feature.id]) {
+        if (getSetting(feature.id)) {
             await loadFeature(feature);
         }
     }
 
-    console.log('[ToolBox] Extension loaded');
+    console.log(`[${LOG_PREFIX}] Extension loaded`);
 }
