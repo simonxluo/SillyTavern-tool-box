@@ -1,13 +1,13 @@
 {
-    "display_name": "Context Panel",
+    "display_name": "Tool Box",
     "loading_order": 20,
     "requires": [],
     "optional": [],
     "js": "index.js",
     "css": "style.css",
     "author": "simonxluo",
-    "version": "1.0.0",
-    "homePage": "",
+    "version": "2.1.0",
+    "homePage": "https://github.com/simonxluo/SillyTavern-tool-box",
     "hooks": {
         "activate": "init"
     }
